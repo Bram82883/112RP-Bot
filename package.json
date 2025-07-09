@@ -1,10 +1,13 @@
 {
   "name": "112rp-bot",
   "version": "1.0.0",
+  "description": "Discord bot voor 112RP met moderatie en staff aanvragen",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
+  "author": "Jouw Naam",
+  "license": "MIT",
   "dependencies": {
     "discord.js": "^14.11.0",
     "express": "^4.18.2"
