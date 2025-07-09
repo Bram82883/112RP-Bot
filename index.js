@@ -1,27 +1,40 @@
 const { Client, GatewayIntentBits, PermissionsBitField } = require('discord.js');
+const express = require('express');
+const app = express();
+
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers,
-  ],
+    GatewayIntentBits.GuildMembers
+  ]
 });
 
-const prefix = '!';
+// Simpele webserver voor uptime monitor
+app.get('/', (req, res) => {
+  res.send('Bot is online!');
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Webserver draait op poort ${PORT}`);
+});
 
 client.once('ready', () => {
   console.log(`Bot is ingelogd als ${client.user.tag}`);
 });
 
-client.on('messageCreate', async message => {
+client.on('messageCreate', async (message) => {
   if (!message.guild || message.author.bot) return;
+
+  const prefix = '!';
   if (!message.content.startsWith(prefix)) return;
 
   const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
-  // Check of gebruiker moderator permissies heeft
+  // Controleer permissies
   if (!message.member.permissions.has(PermissionsBitField.Flags.ModerateMembers)) {
     return message.reply('Je hebt geen permissies voor dit command.');
   }
@@ -67,11 +80,11 @@ client.on('messageCreate', async message => {
 
     else if (command === 'deletechannel') {
       const channel = message.mentions.channels.first() || message.channel;
-      message.reply(`Kanaal ${channel.name} wordt verwijderd over 60 minuten.`);
+      message.reply(`Channel ${channel.name} wordt verwijderd over 60 minuten.`);
 
       setTimeout(() => {
         channel.delete().catch(console.error);
-      }, 60 * 60 * 1000);
+      }, 60 * 60 * 1000); // 60 minuten
     }
 
     else if (command === 'purge') {
@@ -93,74 +106,69 @@ client.on('messageCreate', async message => {
       message.reply('Berichten verwijderd.');
     }
 
-    else if (command === 'addrole') {
+    else if (command === 'roleadd') {
       const user = message.mentions.members.first();
-      if (!user) return message.reply('Geef een gebruiker om de rol aan toe te voegen.');
+      const roleName = args.join(' ');
+      if (!user) return message.reply('Geef een gebruiker om de rol aan te geven.');
+      if (!roleName) return message.reply('Geef een rolename om toe te voegen.');
 
-      const roleName = args.slice(1).join(' ');
-      if (!roleName) return message.reply('Geef een rolnaam op.');
-
-      const role = message.guild.roles.cache.find(r => r.name === roleName);
+      const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === roleName.toLowerCase());
       if (!role) return message.reply('Rol niet gevonden.');
 
       await user.roles.add(role);
-      message.reply(`${role.name} is toegevoegd aan ${user.user.tag}.`);
-    }
-
-    else if (command === 'removerole') {
-      const user = message.mentions.members.first();
-      if (!user) return message.reply('Geef een gebruiker om de rol van te verwijderen.');
-
-      const roleName = args.slice(1).join(' ');
-      if (!roleName) return message.reply('Geef een rolnaam op.');
-
-      const role = message.guild.roles.cache.find(r => r.name === roleName);
-      if (!role) return message.reply('Rol niet gevonden.');
-
-      await user.roles.remove(role);
-      message.reply(`${role.name} is verwijderd van ${user.user.tag}.`);
-    }
-
-    else if (command === 'staffaanvraag') {
-      const user = message.mentions.members.first();
-      if (!user) return message.reply('Geef de gebruiker aan die de rol moet krijgen.');
-
-      const roleName = args[1];
-      if (!roleName) return message.reply('Geef een rolnaam op.');
-
-      const beslisser = message.mentions.members.last();
-      if (!beslisser) return message.reply('Geef aan wie de beslissing heeft genomen.');
-
-      const role = message.guild.roles.cache.find(r => r.name === roleName);
-      if (!role) return message.reply('Rol niet gevonden.');
-
-      // Voeg de rol toe
-      await user.roles.add(role);
-
-      // Maak embed bericht
-      const datum = new Date().toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' });
-
-      const embed = {
-        color: 0x0099ff,
-        title: '📝 Staff Aanvraag Log 📝',
-        fields: [
-          { name: '📅 Datum', value: datum },
-          { name: '👤 Aanvrager', value: `<@${user.id}>` },
-          { name: '🎭 Aangevraagde Rol', value: role.name },
-          { name: '🛠️ Beslissing door', value: `<@${beslisser.id}>` },
-          { name: '📜 Status', value: '✅ Goedgekeurd' },
-          { name: '📌 Reden', value: 'Is een goeie Kmar agent en kent de regels uit zn hoofd!' },
-          { name: '👉 Tekst van Beslissing', value: `✅ <@${user.id}> is ${role.name} geworden! Welkom in het team!` },
-        ],
-        timestamp: new Date(),
-      };
-
-      message.channel.send({ embeds: [embed] });
       message.reply(`${user.user.tag} heeft de rol ${role.name} gekregen.`);
     }
 
+    else if (command === 'roleremove') {
+      const user = message.mentions.members.first();
+      const roleName = args.join(' ');
+      if (!user) return message.reply('Geef een gebruiker om de rol te verwijderen.');
+      if (!roleName) return message.reply('Geef een rolename om te verwijderen.');
+
+      const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === roleName.toLowerCase());
+      if (!role) return message.reply('Rol niet gevonden.');
+
+      await user.roles.remove(role);
+      message.reply(`${user.user.tag} is de rol ${role.name} kwijt.`);
+    }
+
     else if (command === 'invite') {
-      message.channel.send('Hier is de invite link voor de bot:\nhttps://discord.com/oauth2/authorize?client_id=1392443181395738735&permissions=8&integration_type=0&scope=bot');
+      message.reply('Hier is de invite link: https://discord.com/oauth2/authorize?client_id=1392443181395738735&permissions=8&integration_type=0&scope=bot');
+    }
+
+    else if (command === 'staffaanvraag') {
+      const staffUser = message.mentions.members.first();
+      const roleName = args[1];
+      const beslisser = message.author;
+      const datum = new Date().toLocaleString('nl-NL');
+
+      if (!staffUser) return message.reply('Geef een gebruiker op voor de staff aanvraag.');
+      if (!roleName) return message.reply('Geef een rolnaam op.');
+      const role = message.guild.roles.cache.find(r => r.name.toLowerCase() === roleName.toLowerCase());
+      if (!role) return message.reply('Rol niet gevonden.');
+
+      // Bericht opmaken
+      const aanvraagBericht = `
+@everyone
+
+📝 **Staff Aanvraag Log** 📝
+
+📅 Datum: ${datum}
+👤 Aanvrager: ${staffUser}
+🎭 Aangevraagde Rol: ${role.name}
+🛠️ Beslissing door: ${beslisser}
+📜 Status: ✅ Goedgekeurd
+📌 Reden: Is een goeie Kmar agent en kent de regels uit zn hoofd!
+
+👉 Tekst van Beslissing:
+
+✅ Goedgekeurd:
+🎉 ${staffUser} is ${role.name} geworden! Welkom in het team!
+      `;
+
+      message.channel.send(aanvraagBericht);
+
+      await staffUser.roles.add(role);
     }
 
   } catch (err) {
