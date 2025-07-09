@@ -1,55 +1,55 @@
 const { Client, GatewayIntentBits, PermissionsBitField } = require('discord.js');
-const express = require('express');
-const app = express();
-
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers
-  ]
+    GatewayIntentBits.GuildMembers,
+  ],
 });
 
-// Webserver voor Render keep-alive
-app.get('/', (req, res) => res.send('Bot is online!'));
-app.listen(3000, () => console.log('Webserver draait op poort 3000 (keep-alive)'));
+const prefix = '!';
 
 client.once('ready', () => {
-  console.log(`✅ Bot is ingelogd als ${client.user.tag}`);
+  console.log(`Bot is ingelogd als ${client.user.tag}`);
 });
 
 client.on('messageCreate', async message => {
   if (!message.guild || message.author.bot) return;
-
-  const prefix = '!';
   if (!message.content.startsWith(prefix)) return;
 
   const args = message.content.slice(prefix.length).trim().split(/ +/);
   const command = args.shift().toLowerCase();
 
+  // Check of gebruiker moderator permissies heeft
   if (!message.member.permissions.has(PermissionsBitField.Flags.ModerateMembers)) {
-    return message.reply('⛔ Je hebt geen permissies voor dit command.');
+    return message.reply('Je hebt geen permissies voor dit command.');
   }
 
   try {
     if (command === 'ban') {
       const user = message.mentions.members.first();
-      if (!user || !user.bannable) return message.reply('⛔ Kan deze gebruiker niet bannen.');
+      if (!user) return message.reply('Geef een gebruiker om te bannen.');
+      if (!user.bannable) return message.reply('Ik kan deze gebruiker niet bannen.');
+
       await user.ban();
       message.reply(`${user.user.tag} is geband.`);
     }
 
     else if (command === 'kick') {
       const user = message.mentions.members.first();
-      if (!user || !user.kickable) return message.reply('⛔ Kan deze gebruiker niet kicken.');
+      if (!user) return message.reply('Geef een gebruiker om te kicken.');
+      if (!user.kickable) return message.reply('Ik kan deze gebruiker niet kicken.');
+
       await user.kick();
       message.reply(`${user.user.tag} is gekickt.`);
     }
 
     else if (command === 'softban') {
       const user = message.mentions.members.first();
-      if (!user || !user.bannable) return message.reply('⛔ Kan deze gebruiker niet softbannen.');
+      if (!user) return message.reply('Geef een gebruiker om te softbannen.');
+      if (!user.bannable) return message.reply('Ik kan deze gebruiker niet bannen.');
+
       await user.ban({ deleteMessageDays: 7 });
       await message.guild.members.unban(user.id);
       message.reply(`${user.user.tag} is softgebanned.`);
@@ -57,15 +57,18 @@ client.on('messageCreate', async message => {
 
     else if (command === 'timeout') {
       const user = message.mentions.members.first();
-      const tijd = parseInt(args[1]) || 600;
-      if (!user || !user.moderatable) return message.reply('⛔ Kan deze gebruiker geen timeout geven.');
+      if (!user) return message.reply('Geef een gebruiker om een time-out te geven.');
+      if (!user.moderatable) return message.reply('Ik kan deze gebruiker geen time-out geven.');
+
+      const tijd = parseInt(args[0]) || 600; // tijd in seconden, standaard 10 minuten
       await user.timeout(tijd * 1000);
-      message.reply(`${user.user.tag} heeft een timeout van ${tijd} seconden.`);
+      message.reply(`${user.user.tag} heeft een time-out gekregen van ${tijd} seconden.`);
     }
 
     else if (command === 'deletechannel') {
       const channel = message.mentions.channels.first() || message.channel;
-      message.reply(`⏳ Channel ${channel.name} wordt verwijderd over 60 minuten.`);
+      message.reply(`Kanaal ${channel.name} wordt verwijderd over 60 minuten.`);
+
       setTimeout(() => {
         channel.delete().catch(console.error);
       }, 60 * 60 * 1000);
@@ -75,7 +78,7 @@ client.on('messageCreate', async message => {
       const user = message.mentions.users.first();
       const channel = message.channel;
       if (!channel.permissionsFor(message.member).has(PermissionsBitField.Flags.ManageMessages)) {
-        return message.reply('⛔ Je hebt geen permissie om berichten te verwijderen.');
+        return message.reply('Je hebt geen permissies om berichten te verwijderen.');
       }
 
       let fetched;
@@ -87,61 +90,83 @@ client.on('messageCreate', async message => {
         }
       } while (fetched.size >= 2);
 
-      message.reply('🧹 Berichten verwijderd.');
+      message.reply('Berichten verwijderd.');
     }
 
     else if (command === 'addrole') {
       const user = message.mentions.members.first();
+      if (!user) return message.reply('Geef een gebruiker om de rol aan toe te voegen.');
+
       const roleName = args.slice(1).join(' ');
+      if (!roleName) return message.reply('Geef een rolnaam op.');
+
       const role = message.guild.roles.cache.find(r => r.name === roleName);
-      if (!user || !role) return message.reply('⛔ Gebruiker of rol niet gevonden.');
+      if (!role) return message.reply('Rol niet gevonden.');
+
       await user.roles.add(role);
-      message.reply(`${role.name} toegevoegd aan ${user.user.tag}`);
+      message.reply(`${role.name} is toegevoegd aan ${user.user.tag}.`);
     }
 
     else if (command === 'removerole') {
       const user = message.mentions.members.first();
-      const roleName = args.slice(1).join(' ');
-      const role = message.guild.roles.cache.find(r => r.name === roleName);
-      if (!user || !role) return message.reply('⛔ Gebruiker of rol niet gevonden.');
-      await user.roles.remove(role);
-      message.reply(`${role.name} verwijderd van ${user.user.tag}`);
-    }
+      if (!user) return message.reply('Geef een gebruiker om de rol van te verwijderen.');
 
-    else if (command === 'invite') {
-      const invite = await message.channel.createInvite({ maxAge: 0, maxUses: 0 });
-      message.reply(`🔗 Server invite: ${invite.url}`);
+      const roleName = args.slice(1).join(' ');
+      if (!roleName) return message.reply('Geef een rolnaam op.');
+
+      const role = message.guild.roles.cache.find(r => r.name === roleName);
+      if (!role) return message.reply('Rol niet gevonden.');
+
+      await user.roles.remove(role);
+      message.reply(`${role.name} is verwijderd van ${user.user.tag}.`);
     }
 
     else if (command === 'staffaanvraag') {
-      const target = message.mentions.members.first();
-      const roleName = args[1];
-      const beslisser = message.member;
-      const role = message.guild.roles.cache.find(r => r.name === roleName);
-      if (!target || !role) return message.reply('⛔ Gebruiker of rol niet gevonden.');
+      const user = message.mentions.members.first();
+      if (!user) return message.reply('Geef de gebruiker aan die de rol moet krijgen.');
 
+      const roleName = args[1];
+      if (!roleName) return message.reply('Geef een rolnaam op.');
+
+      const beslisser = message.mentions.members.last();
+      if (!beslisser) return message.reply('Geef aan wie de beslissing heeft genomen.');
+
+      const role = message.guild.roles.cache.find(r => r.name === roleName);
+      if (!role) return message.reply('Rol niet gevonden.');
+
+      // Voeg de rol toe
+      await user.roles.add(role);
+
+      // Maak embed bericht
       const datum = new Date().toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' });
 
-      const log = `📝 **Staff Aanvraag Log** 📝
+      const embed = {
+        color: 0x0099ff,
+        title: '📝 Staff Aanvraag Log 📝',
+        fields: [
+          { name: '📅 Datum', value: datum },
+          { name: '👤 Aanvrager', value: `<@${user.id}>` },
+          { name: '🎭 Aangevraagde Rol', value: role.name },
+          { name: '🛠️ Beslissing door', value: `<@${beslisser.id}>` },
+          { name: '📜 Status', value: '✅ Goedgekeurd' },
+          { name: '📌 Reden', value: 'Is een goeie Kmar agent en kent de regels uit zn hoofd!' },
+          { name: '👉 Tekst van Beslissing', value: `✅ <@${user.id}> is ${role.name} geworden! Welkom in het team!` },
+        ],
+        timestamp: new Date(),
+      };
 
-📅 **Datum:** ${datum}
-👤 **Aanvrager:** ${target}
-🎭 **Aangevraagde Rol:** ${role.name}
-🛠️ **Beslissing door:** ${beslisser}
-📜 **Status:** ✅ Goedgekeurd
+      message.channel.send({ embeds: [embed] });
+      message.reply(`${user.user.tag} heeft de rol ${role.name} gekregen.`);
+    }
 
-✅ **Goedgekeurd:**
-🎉 ${target} is **${role.name}** geworden! Welkom in het team!`;
-
-      await target.roles.add(role);
-      message.channel.send(log);
+    else if (command === 'invite') {
+      message.channel.send('Hier is de invite link voor de bot:\nhttps://discord.com/oauth2/authorize?client_id=1392443181395738735&permissions=8&integration_type=0&scope=bot');
     }
 
   } catch (err) {
     console.error(err);
-    message.reply('⛔ Er ging iets mis bij het uitvoeren van het command.');
+    message.reply('Er ging iets mis met het uitvoeren van het command.');
   }
 });
 
-// Zorg dat je je token goed instelt via Render dashboard als environment variable!
 client.login(process.env.TOKEN);
