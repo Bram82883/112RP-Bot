@@ -27,11 +27,9 @@ client.on('messageCreate', async message => {
  
   const isAdmin = message.member.roles.cache.has(ADMIN_ROLE_ID);
   const isStaff = message.member.roles.cache.has(STAFF_ROLE_ID);
-  const isJoincodeAllowed = message.member.roles.cache.has(JOINCODE_ROLE_ID);
  
   // JOINCODE COMMAND
   if (command === 'joincode') {
-    if (!isJoincodeAllowed) return message.reply('Je hebt geen toegang tot dit commando.');
     return message.reply('De servercode van 112RP is **wrfj91jj**');
   }
  
