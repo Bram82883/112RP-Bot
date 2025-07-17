@@ -74,7 +74,7 @@ async function applyClaimPermissions(channel, { claimerMember, roleType }) {
   const adminRole = guild.roles.cache.get(ADMIN_ROLE_ID);
 
   // BASIS: iedereen zien, niet typen
-  await channel.permissionOverwrites.edit(everyoneRole, { ViewChannel: true, SendMessages: false }).catch(console.error);
+  await channel.permissionOverwrites.edit(everyoneRole, { ViewChannel: false, SendMessages: false }).catch(console.error);
 
   // STAFF role: zien, niet typen
   if (staffRole) {
