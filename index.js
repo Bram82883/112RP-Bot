@@ -1,170 +1,311 @@
-const { Client, GatewayIntentBits, PermissionsBitField } = require('discord.js');
-require('dotenv').config();
+const { Client, GatewayIntentBits, PermissionsBitField, REST, Routes, SlashCommandBuilder } = require('discord.js');
+const express = require('express');
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-  ],
+    GatewayIntentBits.GuildMembers
+  ]
 });
 
-// IDs, pas aan naar jouw server:
+// === CONFIG ===
 const ADMIN_ROLE_ID = '1388216679066243252';
 const STAFF_ROLE_ID = '1388111236511568003';
-const TICKET_CATEGORY_ID = '1390451461539758090';
+const TICKET_CATEGORY_ID = '1390451461539758090'; // Ticketcategorie waar !claim werkt
 
-// Helpers (kopieer deze functies van je oude bot)
+// EXPRESS SERVER VOOR UPTIME BOT
+const app = express();
+const PORT = process.env.PORT || 3000;
+app.get('/', (req, res) => res.send('Bot is alive!'));
+app.listen(PORT, () => console.log(`Express draait op poort ${PORT}`));
+
+// === HELPER FUNCTIES (je eigen code) ===
+const CLAIM_REGEX = /\|CLAIM:(\d+):(staff|admin)\|/i;
+
 function parseClaimFromTopic(topic) {
   if (!topic) return null;
-  const match = topic.match(/Claimed by: <@!?(\d+)>/);
-  return match ? match[1] : null;
+  const m = topic.match(CLAIM_REGEX);
+  if (!m) return null;
+  return { userId: m[1], roleType: m[2].toLowerCase() };
 }
 
-// Event: Bot is ready
-client.once('ready', () => {
+async function setClaimInTopic(channel, userId, roleType) {
+  const oldTopic = channel.topic || '';
+  const cleaned = oldTopic.replace(CLAIM_REGEX, '').trim();
+  const nieuwTopic = `${cleaned}${cleaned.length ? ' ' : ''}|CLAIM:${userId}:${roleType}|`;
+  try {
+    await channel.setTopic(nieuwTopic);
+  } catch (err) {
+    console.warn(`[setClaimInTopic] kon topic niet zetten in #${channel.name}:`, err.message);
+  }
+}
+
+function isInTicketCategory(channel) {
+  return channel.parentId === TICKET_CATEGORY_ID;
+}
+
+function hasAdmin(member) {
+  return member.roles.cache.has(ADMIN_ROLE_ID);
+}
+
+function hasStaff(member) {
+  return member.roles.cache.has(STAFF_ROLE_ID);
+}
+
+function getOpenerIdFromChannelName(name) {
+  if (!name) return null;
+  const m = name.match(/(\d{15,})$/);
+  return m ? m[1] : null;
+}
+
+async function applyClaimPermissions(channel, { claimerMember, roleType }) {
+  const guild = channel.guild;
+  const everyoneRole = guild.roles.everyone;
+  const staffRole = guild.roles.cache.get(STAFF_ROLE_ID);
+  const adminRole = guild.roles.cache.get(ADMIN_ROLE_ID);
+
+  await channel.permissionOverwrites.edit(everyoneRole, { ViewChannel: false, SendMessages: false }).catch(console.error);
+
+  if (staffRole) {
+    await channel.permissionOverwrites.edit(staffRole, { ViewChannel: true, SendMessages: false }).catch(console.error);
+  }
+
+  if (adminRole) {
+    await channel.permissionOverwrites.edit(adminRole, { ViewChannel: true, SendMessages: false }).catch(console.error);
+  }
+
+  const openerId = getOpenerIdFromChannelName(channel.name);
+  if (openerId && openerId !== claimerMember.id) {
+    await channel.permissionOverwrites.edit(openerId, { ViewChannel: true, SendMessages: true }).catch(console.error);
+  }
+
+  await channel.permissionOverwrites.edit(claimerMember.id, { ViewChannel: true, SendMessages: true }).catch(console.error);
+
+  if (roleType === 'staff' && adminRole) {
+    await channel.permissionOverwrites.edit(adminRole, { ViewChannel: true, SendMessages: true }).catch(console.error);
+  }
+}
+
+async function addMemberToTicket(channel, memberId) {
+  await channel.permissionOverwrites.edit(memberId, { ViewChannel: true, SendMessages: true }).catch(console.error);
+}
+
+// === SLASH COMMAND DEFINITIES ===
+const commands = [
+  new SlashCommandBuilder()
+    .setName('joincode')
+    .setDescription('Geef de servercode van 112RP'),
+  new SlashCommandBuilder()
+    .setName('staffaanvraag')
+    .setDescription('Vraag een staff rol aan')
+    .addUserOption(option => option.setName('gebruiker').setDescription('De gebruiker').setRequired(true))
+    .addStringOption(option => option.setName('rolnaam').setDescription('De rolnaam').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('ban')
+    .setDescription('Ban een gebruiker')
+    .addUserOption(option => option.setName('gebruiker').setDescription('De gebruiker om te bannen').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('kick')
+    .setDescription('Kick een gebruiker')
+    .addUserOption(option => option.setName('gebruiker').setDescription('De gebruiker om te kicken').setRequired(true)),
+  new SlashCommandBuilder()
+    .setName('timeout')
+    .setDescription('Timeout een gebruiker')
+    .addUserOption(option => option.setName('gebruiker').setDescription('De gebruiker').setRequired(true))
+    .addIntegerOption(option => option.setName('tijd').setDescription('Tijd in seconden (default 600)')),
+  new SlashCommandBuilder()
+    .setName('deletechannel')
+    .setDescription('Verwijder een kanaal over 60 minuten')
+    .addChannelOption(option => option.setName('kanaal').setDescription('Kanaal om te verwijderen')),
+  new SlashCommandBuilder()
+    .setName('purge')
+    .setDescription('Verwijder berichten (optioneel van gebruiker)')
+    .addUserOption(option => option.setName('gebruiker').setDescription('Gebruiker om berichten van te verwijderen')),
+  new SlashCommandBuilder()
+    .setName('invite')
+    .setDescription('Geef de invite link van de bot'),
+  new SlashCommandBuilder()
+    .setName('claim')
+    .setDescription('Claim een ticket kanaal'),
+  new SlashCommandBuilder()
+    .setName('memberticket')
+    .setDescription('Voeg een lid toe aan het ticket kanaal')
+    .addUserOption(option => option.setName('gebruiker').setDescription('Gebruiker om toe te voegen').setRequired(true))
+];
+
+// Register slash commands bij Discord (globaal)
+client.once('ready', async () => {
   console.log(`Bot is ingelogd als ${client.user.tag}`);
+
+  const rest = new REST({ version: '10' }).setToken(process.env.TOKEN);
+  try {
+    console.log('Slash commands registreren...');
+    await rest.put(
+      Routes.applicationCommands(client.user.id),
+      { body: commands.map(cmd => cmd.toJSON()) }
+    );
+    console.log('Slash commands geregistreerd!');
+  } catch (err) {
+    console.error('Fout bij registreren slash commands:', err);
+  }
 });
 
-// Slash command handler
+// Event handler voor slash commands
 client.on('interactionCreate', async interaction => {
   if (!interaction.isCommand()) return;
 
-  const { commandName, options, member, guild, channel } = interaction;
-  const isMod = member.roles.cache.has(ADMIN_ROLE_ID) || member.roles.cache.has(STAFF_ROLE_ID);
+  const member = interaction.member;
+  const isMod = hasAdmin(member) || hasStaff(member);
 
-  try {
-    // --- joincode ---
-    if (commandName === 'joincode') {
+  switch(interaction.commandName) {
+    case 'joincode':
       return interaction.reply('De servercode van 112RP is **wrfj91jj**');
-    }
 
-    // --- staffaanvraag ---
-    if (commandName === 'staffaanvraag') {
-      if (!isMod) return interaction.reply({ content: 'Geen permissie.', ephemeral: true });
-
-      const user = options.getUser('gebruiker');
-      const rolNaam = options.getString('rolnaam');
-      const memberToAdd = guild.members.cache.get(user.id);
-      const rol = guild.roles.cache.find(r => r.name.toLowerCase() === rolNaam.toLowerCase());
-
+    case 'staffaanvraag': {
+      if (!isMod) return interaction.reply({ content: 'Je hebt geen permissies voor dit command.', ephemeral: true });
+      const target = interaction.options.getUser('gebruiker');
+      const rolnaam = interaction.options.getString('rolnaam');
+      const rol = interaction.guild.roles.cache.find(r => r.name.toLowerCase() === rolnaam.toLowerCase());
       if (!rol) return interaction.reply({ content: 'Rol niet gevonden.', ephemeral: true });
 
-      await memberToAdd.roles.add(rol);
+      try {
+        const guildMember = await interaction.guild.members.fetch(target.id);
+        await guildMember.roles.add(rol);
+        const logKanaal = interaction.guild.channels.cache.find(c => c.name === 'staff-aanvragen-log');
+        const datum = new Date().toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' });
 
-      const datum = new Date().toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' });
-      const logKanaal = guild.channels.cache.find(c => c.name === 'staff-aanvragen-log');
-      if (logKanaal) {
-        logKanaal.send(`📝 **Staff Aanvraag Log**\n📅 ${datum}\n👤 Aanvrager: ${user}\n🎭 Rol: ${rol.name}\n🛠️ Door: ${member}\n✅ Rol toegevoegd!`);
+        if (logKanaal) {
+          logKanaal.send(`📝 **Staff Aanvraag Log** 📝\n\n📅 Datum: ${datum}\n👤 Aanvrager: ${target}\n🎭 Aangevraagde Rol: ${rol.name}\n🛠️ Beslissing door: ${interaction.user}\n📜 Status: ✅ Goedgekeurd\n\n✅ ${target} is **${rol.name}** geworden! Welkom in het team!`);
+        }
+
+        return interaction.reply(`${target} is succesvol toegevoegd aan de rol ${rol.name}.`);
+      } catch (err) {
+        console.error(err);
+        return interaction.reply({ content: 'Kon de rol niet toekennen.', ephemeral: true });
       }
-
-      return interaction.reply(`${user} is succesvol toegevoegd aan ${rol.name}.`);
     }
 
-    // --- ban ---
-    if (commandName === 'ban') {
-      if (!isMod) return interaction.reply({ content: 'Geen permissie.', ephemeral: true });
+    case 'ban': {
+      if (!isMod) return interaction.reply({ content: 'Je hebt geen permissies voor dit command.', ephemeral: true });
+      const target = interaction.options.getMember('gebruiker');
+      if (!target) return interaction.reply({ content: 'Gebruiker niet gevonden.', ephemeral: true });
+      if (!target.bannable) return interaction.reply({ content: 'Ik kan deze gebruiker niet bannen.', ephemeral: true });
 
-      const user = options.getUser('gebruiker');
-      const memberToBan = guild.members.cache.get(user.id);
-      if (!memberToBan.bannable) return interaction.reply({ content: 'Kan deze gebruiker niet bannen.', ephemeral: true });
-
-      await memberToBan.ban();
-      return interaction.reply(`${user.tag} is geband.`);
+      await target.ban();
+      return interaction.reply(`${target.user.tag} is geband.`);
     }
 
-    // --- kick ---
-    if (commandName === 'kick') {
-      if (!isMod) return interaction.reply({ content: 'Geen permissie.', ephemeral: true });
+    case 'kick': {
+      if (!isMod) return interaction.reply({ content: 'Je hebt geen permissies voor dit command.', ephemeral: true });
+      const target = interaction.options.getMember('gebruiker');
+      if (!target) return interaction.reply({ content: 'Gebruiker niet gevonden.', ephemeral: true });
+      if (!target.kickable) return interaction.reply({ content: 'Ik kan deze gebruiker niet kicken.', ephemeral: true });
 
-      const user = options.getUser('gebruiker');
-      const memberToKick = guild.members.cache.get(user.id);
-      if (!memberToKick.kickable) return interaction.reply({ content: 'Kan deze gebruiker niet kicken.', ephemeral: true });
-
-      await memberToKick.kick();
-      return interaction.reply(`${user.tag} is gekickt.`);
+      await target.kick();
+      return interaction.reply(`${target.user.tag} is gekickt.`);
     }
 
-    // --- timeout ---
-    if (commandName === 'timeout') {
-      if (!isMod) return interaction.reply({ content: 'Geen permissie.', ephemeral: true });
-
-      const user = options.getUser('gebruiker');
-      const tijd = options.getInteger('tijd') || 600; // 10 minuten standaard
-      const memberToTimeout = guild.members.cache.get(user.id);
-      if (!memberToTimeout.moderatable) return interaction.reply({ content: 'Kan geen timeout geven.', ephemeral: true });
-
-      await memberToTimeout.timeout(tijd * 1000);
-      return interaction.reply(`${user.tag} heeft een timeout van ${tijd} seconden gekregen.`);
+    case 'timeout': {
+      if (!isMod) return interaction.reply({ content: 'Je hebt geen permissies voor dit command.', ephemeral: true });
+      const target = interaction.options.getMember('gebruiker');
+      if (!target || !target.moderatable) return interaction.reply({ content: 'Kan gebruiker geen timeout geven.', ephemeral: true });
+      const tijd = interaction.options.getInteger('tijd') || 600;
+      await target.timeout(tijd * 1000);
+      return interaction.reply(`${target.user.tag} heeft een timeout van ${tijd} seconden.`);
     }
 
-    // --- deletechannel ---
-    if (commandName === 'deletechannel') {
-      if (!isMod) return interaction.reply({ content: 'Geen permissie.', ephemeral: true });
-
-      const kanaal = options.getChannel('kanaal') || channel;
-      await interaction.reply(`Kanaal ${kanaal.name} wordt verwijderd over 60 minuten.`);
+    case 'deletechannel': {
+      if (!isMod) return interaction.reply({ content: 'Je hebt geen permissies voor dit command.', ephemeral: true });
+      const kanaal = interaction.options.getChannel('kanaal') || interaction.channel;
+      interaction.reply(`Kanaal ${kanaal.name} wordt verwijderd over 60 minuten.`);
       setTimeout(() => {
         kanaal.delete().catch(console.error);
       }, 60 * 60 * 1000);
+      break;
     }
 
-    // --- purge ---
-    if (commandName === 'purge') {
-      if (!isMod) return interaction.reply({ content: 'Geen permissie.', ephemeral: true });
+    case 'purge': {
+      if (!isMod) return interaction.reply({ content: 'Je hebt geen permissies voor dit command.', ephemeral: true });
+      const target = interaction.options.getUser('gebruiker');
+      const channel = interaction.channel;
+      if (!channel.permissionsFor(interaction.member).has(PermissionsBitField.Flags.ManageMessages)) {
+        return interaction.reply({ content: 'Geen permissie om berichten te verwijderen.', ephemeral: true });
+      }
 
-      const user = options.getUser('gebruiker');
       let fetched;
-      if (user) {
-        // delete laatste 50 berichten van user in dit kanaal
-        fetched = await channel.messages.fetch({ limit: 50 });
-        const messagesToDelete = fetched.filter(m => m.author.id === user.id);
-        await channel.bulkDelete(messagesToDelete);
-        return interaction.reply({ content: `Verwijderde berichten van ${user.tag}`, ephemeral: true });
-      } else {
-        // delete laatste 50 berichten
-        await channel.bulkDelete(50);
-        return interaction.reply({ content: 'Laatste 50 berichten verwijderd.', ephemeral: true });
+      do {
+        fetched = await channel.messages.fetch({ limit: 100 });
+        const messagesToDelete = fetched.filter(m => target ? m.author.id === target.id : true);
+        if (messagesToDelete.size > 0) {
+          await channel.bulkDelete(messagesToDelete, true);
+        }
+      } while (fetched.size >= 2);
+
+      return interaction.reply('Berichten verwijderd.');
+    }
+
+    case 'invite': {
+      const inviteLink = `https://discord.com/oauth2/authorize?client_id=${client.user.id}&permissions=8&scope=bot`;
+      return interaction.reply(`Voeg de bot toe met deze link:\n${inviteLink}`);
+    }
+
+    case 'claim': {
+      if (!isInTicketCategory(interaction.channel)) {
+        return interaction.reply({ content: 'Dit command kan alleen in ticket-kanalen.', ephemeral: true });
+      }
+
+      const member = interaction.member;
+      const roleType = hasAdmin(member) ? 'admin' : hasStaff(member) ? 'staff' : null;
+      if (!roleType) {
+        return interaction.reply({ content: 'Je hebt geen rechten om dit ticket te claimen.', ephemeral: true });
+      }
+
+      const claimInfo = parseClaimFromTopic(interaction.channel.topic);
+      if (claimInfo && claimInfo.userId === member.id) {
+        return interaction.reply({ content: 'Je hebt dit ticket al geclaimd.', ephemeral: true });
+      }
+
+      try {
+        await applyClaimPermissions(interaction.channel, { claimerMember: member, roleType });
+        await setClaimInTopic(interaction.channel, member.id, roleType);
+        return interaction.reply(`Ticket geclaimd door ${member}.`);
+      } catch (err) {
+        console.error('[claim] error:', err);
+        return interaction.reply({ content: 'Kon ticket niet claimen (permissions?).', ephemeral: true });
       }
     }
 
-    // --- invite ---
-    if (commandName === 'invite') {
-      return interaction.reply('Hier is de invite link: https://discord.gg/invitecode');
+    case 'memberticket': {
+      if (!isInTicketCategory(interaction.channel)) {
+        return interaction.reply({ content: 'Dit command kan alleen in ticket-kanalen.', ephemeral: true });
+      }
+
+      const execMember = interaction.member;
+      const claimInfo = parseClaimFromTopic(interaction.channel.topic);
+      const isClaimer = claimInfo && claimInfo.userId === execMember.id;
+      const mag = isClaimer || hasAdmin(execMember) || hasStaff(execMember);
+      if (!mag) {
+        return interaction.reply({ content: 'Je hebt geen rechten om iemand toe te voegen aan dit ticket.', ephemeral: true });
+      }
+
+      const target = interaction.options.getMember('gebruiker');
+      if (!target) {
+        return interaction.reply({ content: 'Gebruik: /memberticket gebruiker', ephemeral: true });
+      }
+
+      try {
+        await addMemberToTicket(interaction.channel, target.id);
+        return interaction.reply(`${target} is toegevoegd aan dit ticket (mag typen).`);
+      } catch (err) {
+        console.error('[memberticket] error:', err);
+        return interaction.reply({ content: 'Kon gebruiker niet toevoegen.', ephemeral: true });
+      }
     }
 
-    // --- claim ticket ---
-    if (commandName === 'claim') {
-      if (!channel.parentId || channel.parentId !== TICKET_CATEGORY_ID) {
-        return interaction.reply({ content: 'Dit commando werkt alleen in ticketkanalen.', ephemeral: true });
-      }
-      const claimer = member.id;
-      const oldClaimer = parseClaimFromTopic(channel.topic);
-      if (oldClaimer) {
-        return interaction.reply({ content: `Ticket is al geclaimd door <@${oldClaimer}>`, ephemeral: true });
-      }
-      await channel.setTopic(`${channel.topic || ''}\nClaimed by: <@${claimer}>`);
-      return interaction.reply(`Ticket succesvol geclaimd door <@${claimer}>`);
-    }
-
-    // --- memberticket ---
-    if (commandName === 'memberticket') {
-      if (!channel.parentId || channel.parentId !== TICKET_CATEGORY_ID) {
-        return interaction.reply({ content: 'Dit commando werkt alleen in ticketkanalen.', ephemeral: true });
-      }
-      if (!isMod) return interaction.reply({ content: 'Geen permissie.', ephemeral: true });
-
-      const user = options.getUser('gebruiker');
-      const permOverwrites = channel.permissionOverwrites;
-
-      await channel.permissionOverwrites.edit(user, { ViewChannel: true, SendMessages: true });
-      return interaction.reply(`${user} is toegevoegd aan het ticket.`);
-    }
-
-  } catch (err) {
-    console.error(err);
-    return interaction.reply({ content: 'Er is iets fout gegaan.', ephemeral: true });
+    default:
+      return interaction.reply({ content: 'Onbekend command.', ephemeral: true });
   }
 });
 
