@@ -1,4 +1,7 @@
 // 112RP Ticketbot (prefix commands, Render-ready keepalive)
+//
+// Zet je TOKEN als environment variable (Render: Dashboard > Env Vars).
+// Node 18+ aanbevolen.
 
 const express = require('express');
 const { Client, GatewayIntentBits, PermissionsBitField } = require('discord.js');
@@ -28,9 +31,8 @@ const TICKET_CATEGORY_ID = '1390451461539758090';     // Ticketcategorie (alleen
 
 // Wachtkamer setup
 const WACHTKAMER_VC_ID   = '1390460157108158555';     // Voice: Wachtkamer
-const WACHTKAMER_TEXT_ID = '1388401216005865542';     // Textkanaal waar je !wachtkameradd kan doen
+const WACHTKAMER_TEXT_ID = '1388401216005865542';     // (Niet vereist; command mag overal.) Bewaard voor toekomst.
 const WACHTKAMER_ROLE_ID = '1396866068064243782';     // Rol met spreek-perms in wachtkamer
-
 
 // ==== CLAIM METADATA ====
 // Formaat in topic: |CLAIM:<userId>:staff| of |CLAIM:<userId>:admin|
@@ -49,7 +51,6 @@ async function setClaimInTopic(channel, userId, roleType) {
   });
 }
 
-
 // ==== ROLE / CONTEXT HELPERS ====
 function isInTicketCategory(channel) {
   return channel.parentId === TICKET_CATEGORY_ID;
@@ -61,14 +62,13 @@ function hasStaff(member) {
   return member.roles.cache.has(STAFF_ROLE_ID);
 }
 
-// Ticketstarter bepalen uit kanaalnaam: pak laatste lange cijferreeks (Discord user-id) aan eind
+// Ticketstarter bepalen uit kanaalnaam: pak laatste lange cijferreeks (Discord user-id)
 // bv: ticket-123456789012345678
 function getOpenerIdFromChannelName(name) {
   if (!name) return null;
   const m = name.match(/(\d{15,})$/);
   return m ? m[1] : null;
 }
-
 
 // ==== PERMISSION LOGICA BIJ CLAIM ====
 // @everyone: geen zicht
@@ -110,18 +110,15 @@ async function applyClaimPermissions(channel, { claimerMember, roleType }) {
   }
 }
 
-
 // ==== EXTRA USER TO TICKET ====
 async function addMemberToTicket(channel, memberId) {
   await channel.permissionOverwrites.edit(memberId, { ViewChannel: true, SendMessages: true }).catch(console.error);
 }
 
-
 // ==== READY ====
 client.once('ready', () => {
   console.log(`✅ Bot ingelogd als ${client.user.tag}`);
 });
-
 
 // ==== MESSAGE COMMAND HANDLER ====
 client.on('messageCreate', async message => {
@@ -140,7 +137,7 @@ client.on('messageCreate', async message => {
   // Alleen Staff + Admin mogen ALLE andere commands (incl. wachtkamer)
   const isMod = hasAdmin(member) || hasStaff(member);
   if (
-    ['staffaanvraag','ban','kick','timeout','deletechannel','purge','invite','claim','memberticket','wachtkameradd']
+    ['staffaanvraag','ban','kick','timeout','deletechannel','purge','invite','claim','memberticket','wachtkameradd','wachtkamerremove']
       .includes(command) && !isMod
   ) {
     return message.reply('Je hebt geen permissies voor dit command.');
@@ -281,22 +278,13 @@ client.on('messageCreate', async message => {
 
   // === WACHTKAMER ADD ===
   if (command === 'wachtkameradd') {
-    // Alleen toegestaan in wachtkamer-textkanaal (en eventueel extra staffkanalen als je wilt)
-    if (message.channel.id !== WACHTKAMER_TEXT_ID) {
-      return message.reply('Gebruik dit command in de wachtkamer textchat.');
-    }
     const target = message.mentions.members.first();
     if (!target) return message.reply('Gebruik: `!wachtkameradd @gebruiker`');
-
-    // User moet in een voicekanaal zitten
     if (!target.voice.channel) {
       return message.reply(`${target} zit niet in een voice kanaal.`);
     }
-
     try {
-      // Sleep naar wachtkamer VC
       await target.voice.setChannel(WACHTKAMER_VC_ID);
-      // Spreek-rol toevoegen
       await target.roles.add(WACHTKAMER_ROLE_ID).catch(() => {});
       return message.reply(`${target} is naar de wachtkamer gesleept en kan nu spreken.`);
     } catch (err) {
@@ -304,13 +292,32 @@ client.on('messageCreate', async message => {
       return message.reply('Kon gebruiker niet naar wachtkamer slepen.');
     }
   }
-});
 
+  // === WACHTKAMER REMOVE ===
+  if (command === 'wachtkamerremove') {
+    const target = message.mentions.members.first();
+    if (!target) return message.reply('Gebruik: `!wachtkamerremove @gebruiker`');
+
+    try {
+      // Rol weg
+      if (target.roles.cache.has(WACHTKAMER_ROLE_ID)) {
+        await target.roles.remove(WACHTKAMER_ROLE_ID).catch(() => {});
+      }
+      // Als user nog in wachtkamer VC zit → disconnect
+      if (target.voice?.channelId === WACHTKAMER_VC_ID) {
+        await target.voice.disconnect().catch(() => {});
+      }
+      return message.reply(`${target} is uit de wachtkamer gehaald.`);
+    } catch (err) {
+      console.error('[wachtkamerremove] error:', err);
+      return message.reply('Kon gebruiker niet uit de wachtkamer halen.');
+    }
+  }
+});
 
 // ==== VOICE STATE UPDATE ====
 // Verwijder spreek-rol als iemand de wachtkamer verlaat
 client.on('voiceStateUpdate', async (oldState, newState) => {
-  // alleen checken als user uit de wachtkamer weggaat
   if (oldState.channelId === WACHTKAMER_VC_ID && newState.channelId !== WACHTKAMER_VC_ID) {
     const member = oldState.member;
     if (member && member.roles.cache.has(WACHTKAMER_ROLE_ID)) {
@@ -319,7 +326,6 @@ client.on('voiceStateUpdate', async (oldState, newState) => {
     }
   }
 });
-
 
 // ==== LOGIN ====
 client.login(process.env.TOKEN);
