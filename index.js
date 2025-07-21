@@ -3,58 +3,54 @@
 const express = require('express');
 const { Client, GatewayIntentBits, PermissionsBitField } = require('discord.js');
 
-//
 // ==== KEEPALIVE WEB SERVER (Render / Uptime Ping) ====
-//
 const app = express();
 const PORT = process.env.PORT || 3000;
 app.get('/', (req, res) => res.send('Bot is alive!'));
 app.listen(PORT, () => console.log(`✅ Keepalive webserver draait op poort ${PORT}`));
 
-//
 // ==== DISCORD CLIENT ====
-//
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildMembers
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildVoiceStates
   ]
 });
 
-//
 // ==== CONFIG ====
-//
 const PREFIX = '!';
 const ADMIN_ROLE_ID = '1388216679066243252';          // Owner / Co-Owner
 const STAFF_ROLE_ID = '1388111236511568003';          // Staff
 const TICKET_CATEGORY_ID = '1390451461539758090';     // Ticketcategorie (alleen hier werkt !claim)
 
-//
+// Wachtkamer setup
+const WACHTKAMER_VC_ID   = '1390460157108158555';     // Voice: Wachtkamer
+const WACHTKAMER_TEXT_ID = '1388401216005865542';     // Textkanaal waar je !wachtkameradd kan doen
+const WACHTKAMER_ROLE_ID = '1396866068064243782';     // Rol met spreek-perms in wachtkamer
+
+
 // ==== CLAIM METADATA ====
 // Formaat in topic: |CLAIM:<userId>:staff| of |CLAIM:<userId>:admin|
-//
 const CLAIM_REGEX = /\|CLAIM:(\d+):(staff|admin)\|/i;
-
 function parseClaimFromTopic(topic) {
   if (!topic) return null;
   const m = topic.match(CLAIM_REGEX);
   return m ? { userId: m[1], roleType: m[2].toLowerCase() } : null;
 }
-
 async function setClaimInTopic(channel, userId, roleType) {
   const oldTopic = channel.topic || '';
   const cleaned = oldTopic.replace(CLAIM_REGEX, '').trim();
   const nieuwTopic = `${cleaned}${cleaned.length ? ' ' : ''}|CLAIM:${userId}:${roleType}|`;
   await channel.setTopic(nieuwTopic).catch(err => {
-    console.warn(`[setClaimInTopic] kon topic niet zetten in #${channel.name}: ${err?.message || err}`);
+    console.warn(`[setClaimInTopic] #${channel.name}: ${err?.message || err}`);
   });
 }
 
-//
+
 // ==== ROLE / CONTEXT HELPERS ====
-//
 function isInTicketCategory(channel) {
   return channel.parentId === TICKET_CATEGORY_ID;
 }
@@ -65,32 +61,28 @@ function hasStaff(member) {
   return member.roles.cache.has(STAFF_ROLE_ID);
 }
 
-// Ticketstarter bepalen uit kanaalnaam: pak laatste lange cijferreeks (Discord user-id) aan eind van naam
-// Voorbeeld: ticket-123456789012345678 => openerId = 123456789012345678
+// Ticketstarter bepalen uit kanaalnaam: pak laatste lange cijferreeks (Discord user-id) aan eind
+// bv: ticket-123456789012345678
 function getOpenerIdFromChannelName(name) {
   if (!name) return null;
   const m = name.match(/(\d{15,})$/);
   return m ? m[1] : null;
 }
 
-//
+
 // ==== PERMISSION LOGICA BIJ CLAIM ====
-// Regels:
-//  - @everyone: geen zicht (ViewChannel=false) -> tickets privé.
-//  - Staff-role: zien, niet typen.
-//  - Admin-role: zien, niet typen.
-//  - Ticketstarter: zien + typen (als gevonden).
-//  - Claimer: zien + typen.
-//  - Als Staff claimt: Admin-role mag óók typen.
-//  - Als Admin claimt: alleen claimer (individueel) + opener; Admin-role blijft dicht -> andere Owners typen niet.
-//
+// @everyone: geen zicht
+// Staff: zien, niet typen
+// Admin: zien, niet typen (tenzij staff claimt → mag typen)
+// Ticketstarter: zien + typen
+// Claimer: zien + typen
 async function applyClaimPermissions(channel, { claimerMember, roleType }) {
   const guild = channel.guild;
   const everyoneRole = guild.roles.everyone;
   const staffRole = guild.roles.cache.get(STAFF_ROLE_ID);
   const adminRole = guild.roles.cache.get(ADMIN_ROLE_ID);
 
-  // @everyone -> volledig dicht
+  // @everyone -> dicht
   await channel.permissionOverwrites.edit(everyoneRole, { ViewChannel: false, SendMessages: false }).catch(console.error);
 
   // Staff -> zien, niet typen
@@ -98,7 +90,7 @@ async function applyClaimPermissions(channel, { claimerMember, roleType }) {
     await channel.permissionOverwrites.edit(staffRole, { ViewChannel: true, SendMessages: false }).catch(console.error);
   }
 
-  // Admin -> zien, niet typen (kan later open bij staff-claim)
+  // Admin -> zien, niet typen (openen we later als staff claimt)
   if (adminRole) {
     await channel.permissionOverwrites.edit(adminRole, { ViewChannel: true, SendMessages: false }).catch(console.error);
   }
@@ -118,23 +110,20 @@ async function applyClaimPermissions(channel, { claimerMember, roleType }) {
   }
 }
 
-//
+
 // ==== EXTRA USER TO TICKET ====
-//
 async function addMemberToTicket(channel, memberId) {
   await channel.permissionOverwrites.edit(memberId, { ViewChannel: true, SendMessages: true }).catch(console.error);
 }
 
-//
+
 // ==== READY ====
-//
 client.once('ready', () => {
   console.log(`✅ Bot ingelogd als ${client.user.tag}`);
 });
 
-//
+
 // ==== MESSAGE COMMAND HANDLER ====
-//
 client.on('messageCreate', async message => {
   if (!message.guild || message.author.bot) return;
   if (!message.content.startsWith(PREFIX)) return;
@@ -143,16 +132,16 @@ client.on('messageCreate', async message => {
   const command = args.shift().toLowerCase();
   const member = message.member;
 
-  // Publiek command
+  // Publiek: iedereen mag joincode zien
   if (command === 'joincode') {
     return message.reply('De servercode van 112RP is **wrfj91jj**');
   }
 
-  // Alleen Staff + Admin mogen hieronder iets uitvoeren.
+  // Alleen Staff + Admin mogen ALLE andere commands (incl. wachtkamer)
   const isMod = hasAdmin(member) || hasStaff(member);
   if (
-    ['staffaanvraag','ban','kick','timeout','deletechannel','purge','invite','claim','memberticket'].includes(command) &&
-    !isMod
+    ['staffaanvraag','ban','kick','timeout','deletechannel','purge','invite','claim','memberticket','wachtkameradd']
+      .includes(command) && !isMod
   ) {
     return message.reply('Je hebt geen permissies voor dit command.');
   }
@@ -166,7 +155,6 @@ client.on('messageCreate', async message => {
     }
     const rol = message.guild.roles.cache.find(r => r.name.toLowerCase() === rolNaam.toLowerCase());
     if (!rol) return message.reply('Rol niet gevonden.');
-
     const datum = new Date().toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' });
 
     try {
@@ -290,9 +278,48 @@ client.on('messageCreate', async message => {
       return message.reply('Kon gebruiker niet toevoegen.');
     }
   }
+
+  // === WACHTKAMER ADD ===
+  if (command === 'wachtkameradd') {
+    // Alleen toegestaan in wachtkamer-textkanaal (en eventueel extra staffkanalen als je wilt)
+    if (message.channel.id !== WACHTKAMER_TEXT_ID) {
+      return message.reply('Gebruik dit command in de wachtkamer textchat.');
+    }
+    const target = message.mentions.members.first();
+    if (!target) return message.reply('Gebruik: `!wachtkameradd @gebruiker`');
+
+    // User moet in een voicekanaal zitten
+    if (!target.voice.channel) {
+      return message.reply(`${target} zit niet in een voice kanaal.`);
+    }
+
+    try {
+      // Sleep naar wachtkamer VC
+      await target.voice.setChannel(WACHTKAMER_VC_ID);
+      // Spreek-rol toevoegen
+      await target.roles.add(WACHTKAMER_ROLE_ID).catch(() => {});
+      return message.reply(`${target} is naar de wachtkamer gesleept en kan nu spreken.`);
+    } catch (err) {
+      console.error('[wachtkameradd] error:', err);
+      return message.reply('Kon gebruiker niet naar wachtkamer slepen.');
+    }
+  }
 });
 
-//
+
+// ==== VOICE STATE UPDATE ====
+// Verwijder spreek-rol als iemand de wachtkamer verlaat
+client.on('voiceStateUpdate', async (oldState, newState) => {
+  // alleen checken als user uit de wachtkamer weggaat
+  if (oldState.channelId === WACHTKAMER_VC_ID && newState.channelId !== WACHTKAMER_VC_ID) {
+    const member = oldState.member;
+    if (member && member.roles.cache.has(WACHTKAMER_ROLE_ID)) {
+      await member.roles.remove(WACHTKAMER_ROLE_ID).catch(console.error);
+      console.log(`[Wachtkamer] Rol verwijderd bij ${member.user.tag}`);
+    }
+  }
+});
+
+
 // ==== LOGIN ====
-//
 client.login(process.env.TOKEN);
