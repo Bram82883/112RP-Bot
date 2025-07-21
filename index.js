@@ -23,6 +23,7 @@ const PREFIX = '!';
 const ADMIN_ROLE_ID = '1388216679066243252';          // Owner / Co-Owner
 const STAFF_ROLE_ID = '1388111236511568003';          // Staff
 const TICKET_CATEGORY_ID = '1390451461539758090';     // Ticketcategorie (alleen hier werkt !claim)
+const ALGEMEEN_KANAAL_ID = '1388398258883137658';    // Algemeen kanaal waar commands mogen
 
 // Wachtkamer setup
 const WACHTKAMER_VC_ID   = '1390460157108158555';     // Voice: Wachtkamer
@@ -115,20 +116,20 @@ async function addMemberToTicket(channel, memberId) {
 }
 
 
+// ==== REPLY + DELETE HELPER ====
+async function replyAndDelete(message, text) {
+  const sent = await message.reply(text);
+  setTimeout(() => {
+    if (!message.deleted) message.delete().catch(() => {});
+    if (!sent.deleted) sent.delete().catch(() => {});
+  }, 5000);
+}
+
+
 // ==== READY ====
 client.once('ready', () => {
   console.log(`✅ Bot ingelogd als ${client.user.tag}`);
 });
-
-
-// ==== UTILS ====
-async function replyAndDelete(message, text) {
-  const botReply = await message.reply(text);
-  setTimeout(() => {
-    message.delete().catch(() => {});
-    botReply.delete().catch(() => {});
-  }, 5000);
-}
 
 
 // ==== MESSAGE COMMAND HANDLER ====
@@ -140,6 +141,15 @@ client.on('messageCreate', async message => {
   const command = args.shift().toLowerCase();
   const member = message.member;
 
+  // Commands mogen in ticketcategorie of in algemeen kanaal
+  const canRunInChannel =
+    (message.channel.parentId === TICKET_CATEGORY_ID) ||
+    (message.channel.id === ALGEMEEN_KANAAL_ID);
+
+  if (!canRunInChannel) {
+    return replyAndDelete(message, 'Dit command kan hier niet worden gebruikt.');
+  }
+
   // Publiek: iedereen mag joincode zien
   if (command === 'joincode') {
     return replyAndDelete(message, 'De servercode van 112RP is **wrfj91jj**');
@@ -148,7 +158,7 @@ client.on('messageCreate', async message => {
   // Alleen Staff + Admin mogen ALLE andere commands (incl. wachtkamer)
   const isMod = hasAdmin(member) || hasStaff(member);
   if (
-    ['staffaanvraag','ban','kick','timeout','deletechannel','purge','invite','claim','memberticket','wachtkameradd']
+    ['ban','kick','timeout','deletechannel','purge','invite','claim','memberticket','wachtkameradd','wachtkamerremove']
       .includes(command) && !isMod
   ) {
     return replyAndDelete(message, 'Je hebt geen permissies voor dit command.');
@@ -208,75 +218,90 @@ client.on('messageCreate', async message => {
 
   // === DELETECHANNEL ===
   if (command === 'deletechannel') {
-    const kanaal = message.mentions.channels.first() || message.channel;
-    replyAndDelete(message, `Kanaal ${kanaal.name} wordt verwijderd over 60 minuten.`);
-    setTimeout(() => {
-      kanaal.delete().catch(console.error);
-    }, 60 * 60 * 1000);
-    return;
+    await message.channel.delete();
   }
 
   // === PURGE ===
   if (command === 'purge') {
-    const user = message.mentions.users.first();
-    const channel = message.channel;
-    if (!channel.permissionsFor(member).has(PermissionsBitField.Flags.ManageMessages)) {
-      return replyAndDelete(message, 'Geen permissie om berichten te verwijderen.');
-    }
-    let fetched;
-    do {
-      fetched = await channel.messages.fetch({ limit: 100 });
-      const messagesToDelete = fetched.filter(m => !user || m.author.id === user.id);
-      await channel.bulkDelete(messagesToDelete, true).catch(console.error);
-    } while (fetched.size >= 2);
-    return replyAndDelete(message, 'Berichten verwijderd.');
+    const aantal = parseInt(args[0]) || 10;
+    if (aantal > 100) return replyAndDelete(message, 'Max 100 berichten verwijderen.');
+    const messages = await message.channel.bulkDelete(aantal, true);
+    return replyAndDelete(message, `✅ ${messages.size} berichten verwijderd.`);
   }
 
   // === INVITE ===
   if (command === 'invite') {
-    return replyAndDelete(message, 'Invite link: https://discord.gg/example');
+    return replyAndDelete(message, 'Hier is je invite link: https://discord.gg/yourserverlink');
   }
 
   // === CLAIM ===
   if (command === 'claim') {
-    if (!isInTicketCategory(message.channel)) return replyAndDelete(message, 'Dit command werkt alleen in tickets.');
-    if (message.channel.topic && message.channel.topic.includes('|CLAIM:')) {
-      return replyAndDelete(message, 'Dit ticket is al geclaimed.');
+    if (!isInTicketCategory(message.channel)) {
+      return replyAndDelete(message, 'Dit command kan alleen in tickets worden gebruikt.');
     }
+    const topic = message.channel.topic || '';
+    const claimData = parseClaimFromTopic(topic);
+    if (claimData) return replyAndDelete(message, 'Dit ticket is al geclaimed.');
+    // Alleen staff/admin mag claimen
+    if (!isMod) return replyAndDelete(message, 'Je hebt geen permissies om dit ticket te claimen.');
+
     const roleType = hasAdmin(member) ? 'admin' : 'staff';
     await setClaimInTopic(message.channel, member.id, roleType);
     await applyClaimPermissions(message.channel, { claimerMember: member, roleType });
-    return replyAndDelete(message, `${member} heeft het ticket geclaimd als ${roleType}.`);
+    return replyAndDelete(message, `✅ Ticket geclaimed door ${member.user.tag} als ${roleType}`);
   }
 
   // === MEMBERTICKET ===
   if (command === 'memberticket') {
-    // Hier je logica voor memberticket (kan je zelf invullen)
-    return replyAndDelete(message, 'Memberticket command uitgevoerd.');
+    if (!isInTicketCategory(message.channel)) {
+      return replyAndDelete(message, 'Dit command kan alleen in tickets worden gebruikt.');
+    }
+    const mention = message.mentions.members.first();
+    if (!mention) return replyAndDelete(message, 'Gebruik: !memberticket @gebruiker');
+    await addMemberToTicket(message.channel, mention.id);
+    return replyAndDelete(message, `${mention.user.tag} is toegevoegd aan dit ticket.`);
   }
 
   // === WACHTKAMERADD ===
   if (command === 'wachtkameradd') {
     if (message.channel.id !== WACHTKAMER_TEXT_ID) {
-      return replyAndDelete(message, 'Gebruik dit command alleen in het wachtkamer textkanaal.');
+      return replyAndDelete(message, 'Dit command kan alleen in het wachtkamer-tekstkanaal worden gebruikt.');
     }
     const mention = message.mentions.members.first();
-    if (!mention) return replyAndDelete(message, 'Noem een gebruiker om toe te voegen.');
-    const wachtkamerVC = message.guild.channels.cache.get(WACHTKAMER_VC_ID);
-    if (!wachtkamerVC) return replyAndDelete(message, 'Wachtkamer voice kanaal niet gevonden.');
+    if (!mention) return replyAndDelete(message, 'Gebruik: !wachtkameradd @gebruiker');
     try {
       await mention.roles.add(WACHTKAMER_ROLE_ID);
-      await mention.voice.setChannel(wachtkamerVC);
-      return replyAndDelete(message, `${mention} is toegevoegd aan de wachtkamer.`);
-    } catch {
-      return replyAndDelete(message, 'Kon gebruiker niet toevoegen aan de wachtkamer.');
+      // Verplaats naar wachtkamer voice channel als in andere vc
+      if (mention.voice.channel && mention.voice.channel.id !== WACHTKAMER_VC_ID) {
+        await mention.voice.setChannel(WACHTKAMER_VC_ID);
+      }
+      return replyAndDelete(message, `${mention.user.tag} is toegevoegd aan de wachtkamer.`);
+    } catch (err) {
+      console.error(err);
+      return replyAndDelete(message, 'Er is iets misgegaan.');
     }
   }
 
-  // Onbekend command
-  return replyAndDelete(message, 'Onbekend command.');
+  // === WACHTKAMERREMOVE ===
+  if (command === 'wachtkamerremove') {
+    if (message.channel.id !== WACHTKAMER_TEXT_ID) {
+      return replyAndDelete(message, 'Dit command kan alleen in het wachtkamer-tekstkanaal worden gebruikt.');
+    }
+    const mention = message.mentions.members.first();
+    if (!mention) return replyAndDelete(message, 'Gebruik: !wachtkamerremove @gebruiker');
+    try {
+      await mention.roles.remove(WACHTKAMER_ROLE_ID);
+      // Verplaats uit wachtkamer vc naar geen kanaal (disconnect)
+      if (mention.voice.channel && mention.voice.channel.id === WACHTKAMER_VC_ID) {
+        await mention.voice.setChannel(null);
+      }
+      return replyAndDelete(message, `${mention.user.tag} is verwijderd uit de wachtkamer.`);
+    } catch (err) {
+      console.error(err);
+      return replyAndDelete(message, 'Er is iets misgegaan.');
+    }
+  }
+
 });
 
-
-// ==== LOGIN ====
 client.login(process.env.TOKEN);
