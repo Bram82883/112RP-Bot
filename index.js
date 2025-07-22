@@ -14,23 +14,21 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildVoiceStates,
+    GatewayIntentBits.GuildVoiceStates
   ]
 });
 
 // ==== CONFIG ====
 const PREFIX = '!';
-const TOKEN = 'JOUW_DISCORD_BOT_TOKEN_HIER'; // <-- Vul hier je token in (nooit delen)
 const ADMIN_ROLE_ID = '1388216679066243252'; // Owner / Co-owner
 const STAFF_ROLE_ID = '1388111236511568003'; // Staff
-const WACHTKAMER_VC_ID = '1390460157108158555'; 
+const WACHTKAMER_VC_ID = '1390460157108158555';
 const WACHTKAMER_TEXT_ID = '1388401216005865542';
 const WACHTKAMER_ROLE_ID = '1396866068064243782';
 const TICKET_CATEGORY_ID = '1390451461539758090';
+const MEDEDELINGEN_ID = '1388069527857659985'; // Mededelingen kanaal
 
-const LOCKDOWN_ANNOUNCE_CHANNEL = '1388069527857659985';
-const STAFFAANVRAAG_LOG_CHANNEL = '1388402045328818257';
-
+// ==== HELPERS ====
 function hasAdmin(member) {
   return member.roles.cache.has(ADMIN_ROLE_ID);
 }
@@ -41,7 +39,6 @@ function isMod(member) {
   return hasAdmin(member) || hasStaff(member);
 }
 
-// Delete message + reply after 5 sec (behalve staffaanvraag)
 async function replyAndDelete(message, text) {
   const sent = await message.reply(text);
   setTimeout(() => {
@@ -50,10 +47,16 @@ async function replyAndDelete(message, text) {
   }, 5000);
 }
 
+// ==== ERROR HANDLERS ====
+client.on('error', (err) => console.error('Bot Error:', err));
+client.on('unhandledRejection', (reason) => console.error('Unhandled Rejection:', reason));
+
+// ==== READY ====
 client.once('ready', () => {
   console.log(`✅ Bot ingelogd als ${client.user.tag}`);
 });
 
+// ==== MESSAGE HANDLER ====
 client.on('messageCreate', async message => {
   if (!message.guild || message.author.bot) return;
   if (!message.content.startsWith(PREFIX)) return;
@@ -62,60 +65,48 @@ client.on('messageCreate', async message => {
   const command = args.shift().toLowerCase();
   const member = message.member;
 
-  // Iedereen mag joincode zien
+  // ====== JOINCODE ======
   if (command === 'joincode') {
     return replyAndDelete(message, 'De servercode van 112RP is **wrfj91jj**');
   }
 
-  // Staffaanvraag alleen voor staff/admin
+  // ====== STAFFAANVRAAG (alleen staff/admin) ======
   if (command === 'staffaanvraag') {
     if (!isMod(member)) return replyAndDelete(message, 'Je hebt geen permissies voor dit command.');
-
     const aangewezenUser = message.mentions.members.first();
     const rolNaam = args[1];
     if (!aangewezenUser || !rolNaam) {
-      return replyAndDelete(message, 'Gebruik: `!staffaanvraag @gebruiker RolNaam`');
+      return message.reply('Gebruik: `!staffaanvraag @gebruiker RolNaam`');
     }
     const rol = message.guild.roles.cache.find(r => r.name.toLowerCase() === rolNaam.toLowerCase());
-    if (!rol) return replyAndDelete(message, 'Rol niet gevonden.');
-
+    if (!rol) return message.reply('Rol niet gevonden.');
     const datum = new Date().toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' });
-    
+
+    const embed = new EmbedBuilder()
+      .setTitle('📝 Staff Aanvraag Log 📝')
+      .setDescription(`**📅 Datum:** ${datum}\n**👤 Aanvrager:** ${aangewezenUser}\n**🎭 Rol:** ${rol.name}\n**🛠️ Beslissing door:** ${member}\n\n**📜 Status:** ✅ Goedgekeurd\n\n**🎉 ${aangewezenUser} is ${rol.name} geworden! Welkom in het team!**`)
+      .setColor(0x00ff00)
+      .setThumbnail(aangewezenUser.user.displayAvatarURL());
+
     try {
       await aangewezenUser.roles.add(rol);
-
-      const logKanaal = message.guild.channels.cache.get(STAFFAANVRAAG_LOG_CHANNEL);
+      const logKanaal = message.guild.channels.cache.get('1388402045328818257');
       if (logKanaal) {
-        const embed = new EmbedBuilder()
-          .setColor('#2f3136')
-          .setTitle('📝 Staff Aanvraag Log 📝')
-          .setDescription(`@everyone`)
-          .addFields(
-            { name: '📅 Datum', value: datum, inline: true },
-            { name: '👤 Aanvrager', value: `${aangewezenUser}`, inline: true },
-            { name: '🎭 Aangevraagde Rol', value: rol.name, inline: true },
-            { name: '🛠️ Beslissing door', value: `${member}`, inline: true },
-            { name: '📜 Status', value: '✅ Goedgekeurd', inline: true },
-            { name: '👉 Tekst van Beslissing', value: `✅ Goedgekeurd:\n🎉 ${aangewezenUser} is ${rol.name} geworden! Welkom in het team!` }
-          )
-          .setTimestamp();
-
-        await logKanaal.send({ content: '@everyone', embeds: [embed] });
+        logKanaal.send({ content: '@everyone', embeds: [embed] });
       }
-
       return message.reply(`${aangewezenUser} is succesvol toegevoegd aan de rol ${rol.name}.`);
     } catch (err) {
       console.error(err);
-      return replyAndDelete(message, 'Kon de rol niet toekennen.');
+      return message.reply('Kon de rol niet toekennen.');
     }
   }
 
-  // ALLE OVERIGE COMMANDS alleen voor staff/admin
+  // ====== PERMISSION CHECK ======
   if (!isMod(member)) {
     return replyAndDelete(message, 'Je hebt geen permissies voor dit command.');
   }
 
-  // Ban
+  // ====== BAN ======
   if (command === 'ban') {
     const target = message.mentions.members.first();
     if (!target) return replyAndDelete(message, 'Geef een gebruiker om te bannen.');
@@ -124,7 +115,7 @@ client.on('messageCreate', async message => {
     return replyAndDelete(message, `${target.user.tag} is geband.`);
   }
 
-  // Kick
+  // ====== KICK ======
   if (command === 'kick') {
     const target = message.mentions.members.first();
     if (!target) return replyAndDelete(message, 'Geef een gebruiker om te kicken.');
@@ -133,7 +124,7 @@ client.on('messageCreate', async message => {
     return replyAndDelete(message, `${target.user.tag} is gekickt.`);
   }
 
-  // Timeout
+  // ====== TIMEOUT ======
   if (command === 'timeout') {
     const target = message.mentions.members.first();
     const tijd = parseInt(args[0]) || 600;
@@ -142,12 +133,12 @@ client.on('messageCreate', async message => {
     return replyAndDelete(message, `${target.user.tag} heeft een timeout van ${tijd} seconden.`);
   }
 
-  // Delete channel
+  // ====== DELETECHANNEL ======
   if (command === 'deletechannel') {
     await message.channel.delete();
   }
 
-  // Purge
+  // ====== PURGE ======
   if (command === 'purge') {
     const aantal = parseInt(args[0]) || 10;
     if (aantal > 100) return replyAndDelete(message, 'Max 100 berichten verwijderen.');
@@ -155,12 +146,54 @@ client.on('messageCreate', async message => {
     return replyAndDelete(message, `✅ ${messages.size} berichten verwijderd.`);
   }
 
-  // Invite
+  // ====== SERVERLOCKDOWN ======
+  if (command === 'serverlockdown') {
+    if (!hasAdmin(member)) return replyAndDelete(message, 'Alleen Owner/Co-owner kan dit.');
+
+    const mededelingen = message.guild.channels.cache.get(MEDEDELINGEN_ID);
+    if (mededelingen) {
+      const embed = new EmbedBuilder()
+        .setTitle('🚨 SERVER LOCKDOWN 🚨')
+        .setDescription('De server is in **lockdown** gezet. Er wordt aan gewerkt.\nBlijf rustig en volg de updates in dit kanaal.')
+        .setColor(0xff0000)
+        .setThumbnail('https://media.discordapp.net/attachments/1388401216005865542/1396768945494687825/afbeelding_2025-07-05_141215193-modified.png');
+      await mededelingen.send({ content: '@everyone', embeds: [embed] });
+    }
+
+    // Lock alle kanalen
+    message.guild.channels.cache.forEach(async (channel) => {
+      if (channel.isTextBased() || channel.isVoiceBased()) {
+        try {
+          await channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false });
+        } catch (err) { console.error('Kan kanaal niet locken:', channel.name, err); }
+      }
+    });
+
+    return replyAndDelete(message, '🚨 Server is in lockdown gezet.');
+  }
+
+  // ====== SERVERLOCKDOWNSTOP ======
+  if (command === 'serverlockdownstop') {
+    if (!hasAdmin(member)) return replyAndDelete(message, 'Alleen Owner/Co-owner kan dit.');
+
+    // Unlock alle kanalen
+    message.guild.channels.cache.forEach(async (channel) => {
+      if (channel.isTextBased() || channel.isVoiceBased()) {
+        try {
+          await channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: true });
+        } catch (err) { console.error('Kan kanaal niet unlocken:', channel.name, err); }
+      }
+    });
+
+    return replyAndDelete(message, '✅ Server lockdown opgeheven.');
+  }
+
+  // ====== INVITE ======
   if (command === 'invite') {
     return replyAndDelete(message, 'Hier is je invite link: https://discord.gg/yourserverlink');
   }
 
-  // Wachtkameradd
+  // ====== WACHTKAMER ADD ======
   if (command === 'wachtkameradd') {
     const mention = message.mentions.members.first();
     if (!mention) return replyAndDelete(message, 'Gebruik: !wachtkameradd @gebruiker');
@@ -176,7 +209,7 @@ client.on('messageCreate', async message => {
     }
   }
 
-  // Wachtkamerremove
+  // ====== WACHTKAMER REMOVE ======
   if (command === 'wachtkamerremove') {
     const mention = message.mentions.members.first();
     if (!mention) return replyAndDelete(message, 'Gebruik: !wachtkamerremove @gebruiker');
@@ -192,86 +225,6 @@ client.on('messageCreate', async message => {
     }
   }
 
-  // Claim (kan nu overal, let op ticket category permissions!)
-  if (command === 'claim') {
-    const topic = message.channel.topic || '';
-    const claimRegex = /\|CLAIM:(\d+):(staff|admin)\|/i;
-    if (claimRegex.test(topic)) return replyAndDelete(message, 'Dit ticket is al geclaimed.');
-
-    const roleType = args[0] === 'admin' ? 'admin' : 'staff';
-    const claimId = Date.now();
-
-    const newTopic = `${topic} |CLAIM:${claimId}:${roleType}|`;
-    await message.channel.setTopic(newTopic);
-    return replyAndDelete(message, `${member.user.tag} heeft dit ticket geclaimed als ${roleType}.`);
-  }
-
-  // Memberticket
-  if (command === 'memberticket') {
-    return replyAndDelete(message, 'Maak een ticket via het ticketkanaal!');
-  }
-
-  // Serverlockdown (alleen owner/co-owner)
-  if (command === 'serverlockdown') {
-    if (!hasAdmin(member)) return replyAndDelete(message, 'Alleen co-owner of owner kan dit.');
-
-    const announceChannel = message.guild.channels.cache.get(LOCKDOWN_ANNOUNCE_CHANNEL);
-    if (!announceChannel) return replyAndDelete(message, 'Kanaal niet gevonden.');
-
-    // Lock alle kanalen
-    for (const [channelId, channel] of message.guild.channels.cache) {
-      try {
-        await channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: false, Connect: false });
-      } catch {}
-    }
-
-    // Demote co-owner en owner
-    for (const [memberId, m] of message.guild.members.cache) {
-      if (m.roles.cache.has(ADMIN_ROLE_ID)) {
-        try {
-          await m.roles.set([]); // verwijder ALLE rollen, je kan dit aanpassen als je wil
-          await m.roles.add(ADMIN_ROLE_ID); // als je ze wilt behouden moet je anders doen
-        } catch {}
-      }
-    }
-
-    const embed = new EmbedBuilder()
-      .setTitle('🔒 Server Lockdown Actief')
-      .setDescription(`Deze server zit nu in lockdown.\n\nEr wordt hard aan gewerkt om het probleem op te lossen.\n\nLockdown gestart door: ${member.user.tag}`)
-      .setColor('#ff0000')
-      .setImage('https://media.discordapp.net/attachments/1388401216005865542/1396768945494687825/afbeelding_2025-07-05_141215193-modified.png?ex=68814433&is=687ff2b3&hm=0abcaddf6910fe3edc79eff9e42907b4debf6941aacb415257d0ccafc414182e&=&format=webp&quality=lossless&width=563&height=563')
-      .setTimestamp();
-
-    announceChannel.send({ content: '@everyone', embeds: [embed] });
-    return replyAndDelete(message, 'Server is nu in lockdown.');
-  }
-
-  // Serverlockdownstop (alleen owner/co-owner)
-  if (command === 'serverlockdownstop') {
-    if (!hasAdmin(member)) return replyAndDelete(message, 'Alleen co-owner of owner kan dit.');
-
-    const announceChannel = message.guild.channels.cache.get(LOCKDOWN_ANNOUNCE_CHANNEL);
-    if (!announceChannel) return replyAndDelete(message, 'Kanaal niet gevonden.');
-
-    // Unlock alle kanalen
-    for (const [channelId, channel] of message.guild.channels.cache) {
-      try {
-        await channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null, Connect: null });
-      } catch {}
-    }
-
-    // Herstel rollen? (Zet ze terug zoals je wil)
-    // Hier kan je custom logic toevoegen om rollen terug te geven
-
-    const embed = new EmbedBuilder()
-      .setTitle('🔓 Server Lockdown Gestopt')
-      .setDescription(`De server is weer open voor iedereen.\n\nLockdown gestopt door: ${member.user.tag}`)
-      .setColor('#00ff00')
-      .setTimestamp();
-
-    announceChannel.send({ content: '@everyone', embeds: [embed] });
-    return replyAndDelete(message, 'Lockdown is gestopt.');
-  }
 });
 
-client.login(TOKEN);
+client.login(process.env.TOKEN);
