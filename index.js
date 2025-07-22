@@ -1,11 +1,18 @@
-// 112RP Mod & Ticket Bot – full build (v2+: staffaanvraag @rol mention + beslisser override + log kanaal + beslistekst)
+// 112RP Mod & Ticket Bot – full build (v3: serverlockdown + stop + all mod tools)
+//
+// Vereist: Node 18+, discord.js v14, TOKEN env var.
+//
+// Let op: Sla deze file op als index.js en run met: node index.js
 
 const express = require('express');
 const {
   Client,
   GatewayIntentBits,
   PermissionsBitField,
-  EmbedBuilder
+  PermissionFlagsBits,
+  ChannelType,
+  EmbedBuilder,
+  ActivityType
 } = require('discord.js');
 
 // ── Keepalive (Render / UptimeRobot) ──────────────────────────────
@@ -26,22 +33,31 @@ const client = new Client({
 });
 
 // ── Config IDs ────────────────────────────────────────────────────
-const PREFIX               = '!';
-const ADMIN_ROLE_ID        = '1388216679066243252'; // Owner / Co-owner
-const STAFF_ROLE_ID        = '1388111236511568003'; // Staff
-const WACHTKAMER_VC_ID     = '1390460157108158555';
-const WACHTKAMER_TEXT_ID   = '1388401216005865542';
-const WACHTKAMER_ROLE_ID   = '1396866068064243782';
-const TICKET_CATEGORY_ID   = '1390451461539758090';
-const STAFF_LOG_CHANNEL_ID = '1388402045328818257'; // <- nieuwe verplichte log output
+const PREFIX                 = '!';
+const ADMIN_ROLE_ID          = '1388216679066243252'; // Owner / Co-owner
+const STAFF_ROLE_ID          = '1388111236511568003'; // Staff
+const WACHTKAMER_VC_ID       = '1390460157108158555';
+const WACHTKAMER_TEXT_ID     = '1388401216005865542';
+const WACHTKAMER_ROLE_ID     = '1396866068064243782';
+const TICKET_CATEGORY_ID     = '1390451461539758090';
+const STAFF_LOG_CHANNEL_ID   = '1388402045328818257'; // Staff-aanvraag log output
+const ANNOUNCE_CHANNEL_ID    = '1388069527857659985'; // Mededelingen (lockdown bericht)
 
-// vul evt mute rol in; leeg = auto-create 'Muted'
-const MUTE_ROLE_ID         = '';
+// Serverlogo voor lockdown embed
+const SERVER_LOGO_URL = 'https://media.discordapp.net/attachments/1388401216005865542/1396768945494687825/afbeelding_2025-07-05_141215193-modified.png?format=webp&quality=lossless';
+
+// Vul evt. MUTE rol; leeg == auto-create 'Muted'
+const MUTE_ROLE_ID           = '';
 
 // ── Globals ───────────────────────────────────────────────────────
 const deleteTimers = new Map();        // channelId -> timeout ref
 let deleteDelayMinutes = 60;           // standaard delay voor !deletechannel
 const warns = new Map();               // userId -> [{modId, reason, ts},...]
+
+let lockdownActive = false;
+// Bewaar (in-memory) welke kanalen we hebben aangepast bij lockdown:
+// channelId -> { everyoneHad, staffHad }  (true/false/null = geen overwrite)
+const lockdownCache = new Map();
 
 // ── Role helpers ─────────────────────────────────────────────────
 function hasAdmin(m) { return m.roles.cache.has(ADMIN_ROLE_ID); }
@@ -49,7 +65,7 @@ function hasStaff(m) { return m.roles.cache.has(STAFF_ROLE_ID); }
 function isMod(m)    { return hasAdmin(m) || hasStaff(m); }
 
 // ── Auto-delete helper (5s) ──────────────────────────────────────
-// options.auto=false => NIET autodeleten (gebruikt bij staffaanvraag)
+// options.auto=false => NIET autodeleten (bv. staffaanvraag)
 async function replyAndDelete(message, content, options = {}) {
   const auto = options.auto !== false;
   const sent = await message.reply(content);
@@ -161,6 +177,135 @@ async function addMemberToTicket(channel, userId) {
   await channel.permissionOverwrites.edit(userId, { ViewChannel: true, SendMessages: true }).catch(() => {});
 }
 
+// ── Lockdown helpers ─────────────────────────────────────────────
+function getOverwriteState(ch, roleId) {
+  const ow = ch.permissionOverwrites.resolve(roleId);
+  if (!ow) return null;
+  const allow = ow.allow.has(PermissionFlagsBits.SendMessages);
+  const deny  = ow.deny.has(PermissionFlagsBits.SendMessages);
+  if (allow) return true;
+  if (deny)  return false;
+  return null;
+}
+
+async function doServerLockdown(guild, byMember) {
+  if (lockdownActive) return false;
+  lockdownActive = true;
+  lockdownCache.clear();
+
+  const everyone = guild.roles.everyone;
+  const staffR   = guild.roles.cache.get(STAFF_ROLE_ID);
+
+  // Cache & lock alle textkanalen
+  guild.channels.cache.forEach(ch => {
+    if (!ch.isTextBased() || ch.type === ChannelType.GuildCategory) return;
+
+    const prev = {
+      everyone: getOverwriteState(ch, everyone.id),
+      staff: staffR ? getOverwriteState(ch, staffR.id) : null,
+    };
+    lockdownCache.set(ch.id, prev);
+
+    // Deny send voor iedereen + staff
+    ch.permissionOverwrites.edit(everyone, { SendMessages: false }).catch(() => {});
+    if (staffR) ch.permissionOverwrites.edit(staffR, { SendMessages: false }).catch(() => {});
+  });
+
+  // Presence
+  client.user.setPresence({
+    activities: [{ name: 'LOCKDOWN ACTIEF', type: ActivityType.Playing }],
+    status: 'dnd'
+  }).catch(() => {});
+
+  // Announcement embed
+  const announce = guild.channels.cache.get(ANNOUNCE_CHANNEL_ID);
+  if (announce && announce.isTextBased()) {
+    const embed = new EmbedBuilder()
+      .setColor(0xff0000)
+      .setTitle('🚨 SERVER LOCKDOWN 🚨')
+      .setDescription('De server zit **tijdelijk in lockdown**. Er wordt gewerkt aan een oplossing. Dank voor je geduld.')
+      .setImage(SERVER_LOGO_URL)
+      .setFooter({ text: `Uitgevoerd door: ${byMember.user.tag}` })
+      .setTimestamp();
+
+    announce.send({
+      content: '@everyone',
+      embeds: [embed],
+      allowedMentions: { parse: ['everyone'] }
+    }).catch(() => {});
+  }
+
+  // DM alle admin-leden
+  const adminRole = guild.roles.cache.get(ADMIN_ROLE_ID);
+  if (adminRole) {
+    adminRole.members.forEach(m => {
+      m.send(`🚨 **Server Lockdown gestart** door ${byMember}.`).catch(() => {});
+    });
+  }
+
+  return true;
+}
+
+async function undoServerLockdown(guild, byMember) {
+  if (!lockdownActive) return false;
+  lockdownActive = false;
+
+  const everyone = guild.roles.everyone;
+  const staffR   = guild.roles.cache.get(STAFF_ROLE_ID);
+
+  // Restore (best-effort)
+  for (const [chId, prev] of lockdownCache.entries()) {
+    const ch = guild.channels.cache.get(chId);
+    if (!ch) continue;
+    if (!ch.isTextBased() || ch.type === ChannelType.GuildCategory) continue;
+
+    // restore everyone
+    let val = prev.everyone;
+    if (val === true)  ch.permissionOverwrites.edit(everyone, { SendMessages: true  }).catch(() => {});
+    else if (val === false) ch.permissionOverwrites.edit(everyone, { SendMessages: false }).catch(() => {});
+    else ch.permissionOverwrites.edit(everyone, { SendMessages: null }).catch(() => {});
+
+    // restore staff
+    if (staffR) {
+      val = prev.staff;
+      if (val === true)  ch.permissionOverwrites.edit(staffR, { SendMessages: true  }).catch(() => {});
+      else if (val === false) ch.permissionOverwrites.edit(staffR, { SendMessages: false }).catch(() => {});
+      else ch.permissionOverwrites.edit(staffR, { SendMessages: null }).catch(() => {});
+    }
+  }
+  lockdownCache.clear();
+
+  // Presence reset
+  client.user.setPresence({ activities: [], status: 'online' }).catch(() => {});
+
+  // Announcement embed
+  const announce = guild.channels.cache.get(ANNOUNCE_CHANNEL_ID);
+  if (announce && announce.isTextBased()) {
+    const embed = new EmbedBuilder()
+      .setColor(0x00ff7f)
+      .setTitle('✅ SERVER OPEN')
+      .setDescription('De lockdown is opgeheven. Je kunt de server weer normaal gebruiken.')
+      .setFooter({ text: `Opgeheven door: ${byMember.user.tag}` })
+      .setTimestamp();
+
+    announce.send({
+      content: '@everyone',
+      embeds: [embed],
+      allowedMentions: { parse: ['everyone'] }
+    }).catch(() => {});
+  }
+
+  // DM alle admin-leden
+  const adminRole = guild.roles.cache.get(ADMIN_ROLE_ID);
+  if (adminRole) {
+    adminRole.members.forEach(m => {
+      m.send(`✅ **Server Lockdown opgeheven** door ${byMember}.`).catch(() => {});
+    });
+  }
+
+  return true;
+}
+
 // ── Ready ────────────────────────────────────────────────────────
 client.once('ready', () => {
   console.log(`✅ Bot ingelogd als ${client.user.tag}`);
@@ -180,36 +325,37 @@ client.on('messageCreate', async message => {
     return replyAndDelete(message, 'De servercode van 112RP is **wrfj91jj**');
   }
 
-  // ── staffaanvraag (MODS) ──
-  // Gebruik: !staffaanvraag @gebruiker @rol [@beslisser] [beslissingstekst...]
+  // ── staffaanvraag (ALLEEN staff/admin) ──
   if (command === 'staffaanvraag') {
     if (!isMod(member)) {
       return replyAndDelete(message, 'Je hebt geen permissies voor dit command. (staffaanvraag)');
     }
 
-    // Alle member mentions
-    const memberMentions = [...message.mentions.members.values()];
-    const target = memberMentions[0];              // user die rol krijgt
-    const beslisserUser = memberMentions[1] || member; // optioneel override beslisser
-
-    // Rol mention
-    const rol = message.mentions.roles.first();
-    if (!target || !rol) {
-      return message.reply('Gebruik: `!staffaanvraag @gebruiker @rol [@beslisser] [tekst]`');
+    // Verwacht: !staffaanvraag @user RolNaam [beslissingstekst...]
+    const target = message.mentions.members.first();
+    if (!target) {
+      return message.reply('Gebruik: `!staffaanvraag @gebruiker RolNaam [beslissingstekst]`');
     }
 
-    // Filter beslistekst uit args (haal mentions weg)
-    const mentionPatternUser = /^<@!?(\d+)>$/;
-    const mentionPatternRole = /^<@&(\d+)>$/;
-    const beslisArgs = args.filter(tok => !mentionPatternUser.test(tok) && !mentionPatternRole.test(tok));
-    const beslis = beslisArgs.join(' ');
+    // args bevat nu alles ná de mention; eerste = rolnaam
+    // Dus verwijder eerste element als mention; dat is al "gebruikt"
+    // We zoeken positie mention in raw content? Makkelijker: slice...
+    // Simpel: we pakken roleName = args[0]; rest = ...
+    const roleName = args.shift();
+    const customText = args.join(' ');
+
+    if (!roleName) {
+      return message.reply('Gebruik: `!staffaanvraag @gebruiker RolNaam [beslissingstekst]`');
+    }
+
+    const rol = message.guild.roles.cache.find(r => r.name.toLowerCase() === roleName.toLowerCase());
+    if (!rol) return message.reply('Rol niet gevonden.');
 
     const datum = new Date().toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' });
 
-    // default beslistekst
-    const beslistekst = beslis?.length
-      ? beslis
-      : `✅ Goedgekeurd:\n🎉 ${target} is ${rol} geworden! Welkom in het team!`;
+    const beslistekst = customText?.length
+      ? customText
+      : `✅ Goedgekeurd:\n🎉 ${target} is ${rol.name} geworden! Welkom in het team!`;
 
     try {
       await target.roles.add(rol);
@@ -224,11 +370,12 @@ client.on('messageCreate', async message => {
 
 📅 Datum: ${datum}
 👤 Aanvrager: ${target}
-🎭 Aangevraagde Rol: ${rol}
-🛠️ Beslissing door: ${beslisserUser}
+🎭 Aangevraagde Rol: ${rol.name}
+🛠️ Beslissing door: ${member}
 📜 Status: ✅ Goedgekeurd
 
 👉 **Tekst van Beslissing:**
+
 ${beslistekst}`;
         logChannel.send({
           content: logMsg,
@@ -236,12 +383,36 @@ ${beslistekst}`;
         }).catch(() => {});
       }
 
-      // ack in channel waar command werd gedaan (NIET auto delete)
-      return message.reply(`${target} is succesvol toegevoegd aan de rol ${rol}.`);
+      // ack in command-kanaal (NIET auto-delete)
+      return message.reply(`${target} is succesvol toegevoegd aan de rol **${rol.name}**.`);
     } catch (err) {
       console.error(err);
       return message.reply('Kon de rol niet toekennen.');
     }
+  }
+
+  // ── serverlockdown (alleen ADMIN_ROLE) ──
+  if (command === 'serverlockdown') {
+    if (!hasAdmin(member)) {
+      return replyAndDelete(message, 'Alleen Owner/Co-owner mag serverlockdown gebruiken.');
+    }
+    const ok = await doServerLockdown(message.guild, member);
+    if (!ok) {
+      return replyAndDelete(message, 'Lockdown was al actief.');
+    }
+    return replyAndDelete(message, '🚨 Lockdown geactiveerd.');
+  }
+
+  // ── serverlockdownstop ──
+  if (command === 'serverlockdownstop') {
+    if (!hasAdmin(member)) {
+      return replyAndDelete(message, 'Alleen Owner/Co-owner mag serverlockdownstop gebruiken.');
+    }
+    const ok = await undoServerLockdown(message.guild, member);
+    if (!ok) {
+      return replyAndDelete(message, 'Lockdown was niet actief.');
+    }
+    return replyAndDelete(message, '✅ Lockdown opgeheven.');
   }
 
   // mod-only vanaf hier
