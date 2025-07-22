@@ -1,4 +1,4 @@
-// 112RP Mod & Ticket Bot – full build (v2: staffaanvraag restricted + log kanaal + beslistekst)
+// 112RP Mod & Ticket Bot – full build (v2+: staffaanvraag @rol mention + beslisser override + log kanaal + beslistekst)
 
 const express = require('express');
 const {
@@ -26,17 +26,17 @@ const client = new Client({
 });
 
 // ── Config IDs ────────────────────────────────────────────────────
-const PREFIX             = '!';
-const ADMIN_ROLE_ID      = '1388216679066243252'; // Owner / Co-owner
-const STAFF_ROLE_ID      = '1388111236511568003'; // Staff
-const WACHTKAMER_VC_ID   = '1390460157108158555';
-const WACHTKAMER_TEXT_ID = '1388401216005865542';
-const WACHTKAMER_ROLE_ID = '1396866068064243782';
-const TICKET_CATEGORY_ID = '1390451461539758090';
+const PREFIX               = '!';
+const ADMIN_ROLE_ID        = '1388216679066243252'; // Owner / Co-owner
+const STAFF_ROLE_ID        = '1388111236511568003'; // Staff
+const WACHTKAMER_VC_ID     = '1390460157108158555';
+const WACHTKAMER_TEXT_ID   = '1388401216005865542';
+const WACHTKAMER_ROLE_ID   = '1396866068064243782';
+const TICKET_CATEGORY_ID   = '1390451461539758090';
 const STAFF_LOG_CHANNEL_ID = '1388402045328818257'; // <- nieuwe verplichte log output
 
 // vul evt mute rol in; leeg = auto-create 'Muted'
-const MUTE_ROLE_ID       = '';
+const MUTE_ROLE_ID         = '';
 
 // ── Globals ───────────────────────────────────────────────────────
 const deleteTimers = new Map();        // channelId -> timeout ref
@@ -180,30 +180,36 @@ client.on('messageCreate', async message => {
     return replyAndDelete(message, 'De servercode van 112RP is **wrfj91jj**');
   }
 
-  // ── staffaanvraag (nu ALLEEN MODS) ──
+  // ── staffaanvraag (MODS) ──
+  // Gebruik: !staffaanvraag @gebruiker @rol [@beslisser] [beslissingstekst...]
   if (command === 'staffaanvraag') {
     if (!isMod(member)) {
       return replyAndDelete(message, 'Je hebt geen permissies voor dit command. (staffaanvraag)');
     }
 
-    const target   = message.mentions.members.first();
-    const roleName = args[0];              // na mention
-    const beslis   = args.slice(1).join(' '); // rest van tekst
+    // Alle member mentions
+    const memberMentions = [...message.mentions.members.values()];
+    const target = memberMentions[0];              // user die rol krijgt
+    const beslisserUser = memberMentions[1] || member; // optioneel override beslisser
 
-    if (!target || !roleName) {
-      return message.reply('Gebruik: `!staffaanvraag @gebruiker RolNaam [beslissingstekst]`');
+    // Rol mention
+    const rol = message.mentions.roles.first();
+    if (!target || !rol) {
+      return message.reply('Gebruik: `!staffaanvraag @gebruiker @rol [@beslisser] [tekst]`');
     }
 
-    // zoek rol case-insensitive
-    const rol = message.guild.roles.cache.find(r => r.name.toLowerCase() === roleName.toLowerCase());
-    if (!rol) return message.reply('Rol niet gevonden.');
+    // Filter beslistekst uit args (haal mentions weg)
+    const mentionPatternUser = /^<@!?(\d+)>$/;
+    const mentionPatternRole = /^<@&(\d+)>$/;
+    const beslisArgs = args.filter(tok => !mentionPatternUser.test(tok) && !mentionPatternRole.test(tok));
+    const beslis = beslisArgs.join(' ');
 
     const datum = new Date().toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' });
 
     // default beslistekst
     const beslistekst = beslis?.length
       ? beslis
-      : `✅ Goedgekeurd:\n🎉 ${target} is ${rol.name} geworden! Welkom in het team!`;
+      : `✅ Goedgekeurd:\n🎉 ${target} is ${rol} geworden! Welkom in het team!`;
 
     try {
       await target.roles.add(rol);
@@ -218,12 +224,11 @@ client.on('messageCreate', async message => {
 
 📅 Datum: ${datum}
 👤 Aanvrager: ${target}
-🎭 Aangevraagde Rol: ${rol.name}
-🛠️ Beslissing door: ${member}
+🎭 Aangevraagde Rol: ${rol}
+🛠️ Beslissing door: ${beslisserUser}
 📜 Status: ✅ Goedgekeurd
 
 👉 **Tekst van Beslissing:**
-
 ${beslistekst}`;
         logChannel.send({
           content: logMsg,
@@ -232,7 +237,7 @@ ${beslistekst}`;
       }
 
       // ack in channel waar command werd gedaan (NIET auto delete)
-      return message.reply(`${target} is succesvol toegevoegd aan de rol **${rol.name}**.`);
+      return message.reply(`${target} is succesvol toegevoegd aan de rol ${rol}.`);
     } catch (err) {
       console.error(err);
       return message.reply('Kon de rol niet toekennen.');
