@@ -173,40 +173,20 @@ client.on('messageCreate', async message => {
   }
 
   // ====== SERVERLOCKDOWNSTOP ======
-if (command === 'serverlockdownstop') {
-  if (!hasAdmin(member)) return replyAndDelete(message, 'Alleen Owner/Co-owner kan dit.');
+  if (command === 'serverlockdownstop') {
+    if (!hasAdmin(member)) return replyAndDelete(message, 'Alleen Owner/Co-owner kan dit.');
 
-  // Unlock alle kanalen
-  message.guild.channels.cache.forEach(async (channel) => {
-    if (channel.isTextBased()) {
-      try {
-        await channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: null, ViewChannel: true });
-      } catch (err) {
-        console.error('Kan tekstkanaal niet unlocken:', channel.name, err);
+    // Unlock alle kanalen
+    message.guild.channels.cache.forEach(async (channel) => {
+      if (channel.isTextBased() || channel.isVoiceBased()) {
+        try {
+          await channel.permissionOverwrites.edit(message.guild.roles.everyone, { SendMessages: true });
+        } catch (err) { console.error('Kan kanaal niet unlocken:', channel.name, err); }
       }
-    }
-    if (channel.isVoiceBased()) {
-      try {
-        await channel.permissionOverwrites.edit(message.guild.roles.everyone, { Connect: null, Speak: null });
-      } catch (err) {
-        console.error('Kan voicekanaal niet unlocken:', channel.name, err);
-      }
-    }
-  });
+    });
 
-  const announceChannel = message.guild.channels.cache.get(LOCKDOWN_ANNOUNCE_CHANNEL);
-  if (announceChannel) {
-    const embed = new EmbedBuilder()
-      .setTitle('🔓 Server Lockdown Gestopt')
-      .setDescription(`De server is weer open voor iedereen.\n\nLockdown gestopt door: ${member.user.tag}`)
-      .setColor('#00ff00')
-      .setTimestamp();
-
-    await announceChannel.send({ content: '@everyone', embeds: [embed] });
+    return replyAndDelete(message, '✅ Server lockdown opgeheven.');
   }
-
-  return replyAndDelete(message, '✅ Server lockdown opgeheven.');
-}
 
   // ====== INVITE ======
   if (command === 'invite') {
