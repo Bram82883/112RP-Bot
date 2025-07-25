@@ -28,7 +28,7 @@ const client = new Client({
 // ── Config IDs ────────────────────────────────────────────────────
 const PREFIX               = '!';
 const ADMIN_ROLE_ID        = '1388216679066243252'; // Owner / Co-owner
-const STAFF_ROLE_ID        = '1388111236511568003'; // Staff
+const STAFF_ROLE_ID        = '1397509991652528260'; // Moderator
 const WACHTKAMER_VC_ID     = '1390460157108158555';
 const WACHTKAMER_TEXT_ID   = '1388401216005865542';
 const WACHTKAMER_ROLE_ID   = '1396866068064243782';
